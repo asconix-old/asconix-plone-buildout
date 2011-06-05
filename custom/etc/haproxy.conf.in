@@ -1,0 +1,56 @@
+global
+  log 127.0.0.1 local6
+  maxconn  ${haproxy:maxconn}
+  ulimit-n ${haproxy:ulimit}
+  user     ${haproxy:user}
+  group    ${haproxy:group}
+  nbproc 1
+
+defaults
+  mode http
+  option httpclose
+  # Remove requests from the queue if people press stop button
+  option abortonclose
+  # Try to connect this many times on failure
+  retries 3
+  # If a client is bound to a particular backend but it goes down,
+  # send them to a different one
+  option redispatch
+  monitor-uri /haproxy-ping
+
+  timeout connect 7s
+  timeout queue   300s
+  timeout client  300s
+  timeout server  300s
+
+  # Enable status page at this URL, on the port HAProxy is bound to
+  stats enable
+  stats uri /haproxy-status
+  stats refresh 5s
+  stats realm Haproxy\ statistics
+
+frontend zopecluster
+  bind ${haproxy:bind}
+  default_backend zope
+
+# Load balancing over the zope instances
+backend zope
+  # Use Zope's __ac cookie as a basis for session stickiness if present.
+  appsession __ac len 32 timeout 1d
+  # Otherwise add a cookie called "serverid" for maintaining session stickiness.
+  # This cookie lasts until the client's browser closes, and is invisible to Zope.
+  cookie serverid insert nocache indirect
+  # If no session found, use the roundrobin load-balancing algorithm to pick a backend.
+  balance roundrobin
+  # Use / (the default) for periodic backend health checks
+  option httpchk
+
+  # Server options:
+  # "cookie" sets the value of the serverid cookie to be used for the server
+  # "maxconn" is how many connections can be sent to the server at once
+  # "check" enables health checks
+  # "rise 1" means consider Zope up after 1 successful health check
+  server instance-01 ${hosts:instance-01}:${ports:instance-01} cookie instance-01 check maxconn 2 rise 1
+  server instance-02 ${hosts:instance-02}:${ports:instance-02} cookie instance-02 check maxconn 2 rise 1
+  server instance-03 ${hosts:instance-03}:${ports:instance-03} cookie instance-03 check maxconn 2 rise 1
+  server instance-04 ${hosts:instance-04}:${ports:instance-04} cookie instance-04 check maxconn 2 rise 1

@@ -1,0 +1,96 @@
+# VCL file optimized for Caching a Plone site.
+# See http://svn.plone.org/svn/plone/plone.app.caching/trunk/plone/app/caching/proxy-configs/varnish/templates/varnish.vcl.in
+
+# This is an example of a split view caching setup with another proxy
+# like Nginx in front of Varnish to rewrite URLs into the VHM style.
+
+# Also assumes a single backend behind Varnish which could be a single
+# Zope instance or a load balancer like Pound serving multiple ZEO clients.
+# To change this to support multiple backends, see the vcl man pages
+# for instructions.
+
+backend default {
+    .host = "${hosts:haproxy}";
+    .port = "${ports:haproxy}";
+    .connect_timeout = 0.4s;
+    .first_byte_timeout = 300s;
+    .between_bytes_timeout = 60s;
+}
+
+acl purge {
+    "localhost";
+    "127.0.0.1";
+}
+
+sub vcl_recv {
+    set req.backend = default;
+    set req.grace = 120s;
+
+    
+    # we only deal with GET and HEAD by default
+    if (req.request != "GET" && req.request != "HEAD") {
+        if (req.request == "PURGE") {
+            if (!client.ip ~ purge) {
+                    error 405 "Not allowed.";
+            }
+            return(lookup);
+        }
+        return(pipe);
+    }
+    if (req.http.Expect) {
+        return(pipe);
+    }
+
+    /* Always cache images */
+    if (req.url ~ "\.(jpg|jpeg|gif|png|tiff|tif|svg|swf|ico|css|js|vsd|doc|ppt|pps|xls|pdf|mp3|mp4|m4a|ogg|mov|avi|wmv|sxw|zip|gz|bz2|tgz|tar|rar|odc|odb|odf|odg|odi|odp|ods|odt|sxc|sxd|sxi|sxw|dmg|torrent|deb|msi|iso|rpm)$") {
+        return(lookup);
+    }
+    /* Always cache CSS and javascript */
+    if (req.url ~ "\.(css|js)$") {
+        return(lookup);
+    }
+
+    /* Do not cache other authorised content */
+    if (req.http.Authenticate || req.http.Authorization) {
+        return(pass);
+    }
+
+    /* We only care about the "__ac.*" cookies, used for authentication */
+    if (req.http.Cookie && req.http.Cookie ~ "__ac(_(name|password|persistent))?=") {
+        return(pass);
+    }
+
+    if (req.http.Cookie && req.http.Cookie ~ "_ZopeId") {
+        return(pass);
+    }
+
+    return(lookup);
+}
+
+sub vcl_hit {
+    if (req.request == "PURGE") {
+            set obj.ttl = 0s;
+            error 200 "Purged";
+    }
+}
+sub vcl_miss {
+    if (req.request == "PURGE") {
+            error 404 "Not in cache";
+    }
+}
+ 
+sub vcl_fetch {
+    if (!beresp.cacheable) {
+        set beresp.http.X-Varnish-Action = "FETCH (pass - not cacheable)"; #
+        return(pass);
+    }
+    if (beresp.http.Set-Cookie) {
+        set beresp.http.X-Varnish-Action = "FETCH (pass - response sets cookie)";
+        return(pass);
+    }
+
+    if (req.url ~ "(rss_|search_rss)") {
+        set beresp.ttl = 1800s;
+    }
+}
+
